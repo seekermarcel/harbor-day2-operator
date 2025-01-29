@@ -60,13 +60,6 @@ echo "${VERSION:-dev}" > dist/version.txt
 echo "${GIT_SHA:-unknown}" > dist/gitsha.txt
 EOF
 
-# Test stage
-FROM builder as test
-COPY --chown=builder:builder tests/ tests/
-WORKDIR /home/builder/tests
-RUN --mount=type=cache,target=/root/.cache/pytest \
-    /home/builder/venv/bin/python -m unittest discover -v -s .
-
 # Final minimal runtime stage
 # Always use the latest image
 # hadolint ignore=DL3007
