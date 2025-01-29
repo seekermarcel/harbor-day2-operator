@@ -1,12 +1,9 @@
 # syntax=docker/dockerfile:1.7
 # Build stage for compiling the application
-# Always use the latest image
 # hadolint ignore=DL3007
-FROM --platform=$BUILDPLATFORM cgr.dev/chainguard/wolfi-base:latest AS builder
+FROM cgr.dev/chainguard/wolfi-base:latest AS builder
 
 # Build arguments for version tracking
-ARG BUILDPLATFORM
-ARG TARGETPLATFORM
 ARG VERSION
 ARG GIT_SHA
 
@@ -62,9 +59,8 @@ echo "${GIT_SHA:-unknown}" > dist/gitsha.txt
 EOF
 
 # Final minimal runtime stage
-# Always use the latest image
 # hadolint ignore=DL3007
-FROM --platform=$TARGETPLATFORM cgr.dev/chainguard/wolfi-base:latest
+FROM cgr.dev/chainguard/wolfi-base:latest
 
 # Create a non-root user for running the application
 RUN <<EOF
