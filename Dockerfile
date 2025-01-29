@@ -1,5 +1,7 @@
 # syntax=docker/dockerfile:1.7
 # Build stage for compiling the application
+# Always use the latest image
+# hadolint ignore=DL3007
 FROM --platform=$BUILDPLATFORM cgr.dev/chainguard/wolfi-base:latest AS builder
 
 # Build arguments for version tracking
@@ -66,6 +68,8 @@ RUN --mount=type=cache,target=/root/.cache/pytest \
     /home/builder/venv/bin/python -m unittest discover -v -s .
 
 # Final minimal runtime stage
+# Always use the latest image
+# hadolint ignore=DL3007
 FROM --platform=$TARGETPLATFORM cgr.dev/chainguard/wolfi-base:latest
 
 # Create a non-root user for running the application
