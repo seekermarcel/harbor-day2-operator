@@ -1,71 +1,142 @@
-name: Create and publish k8s workbench container image
+name: Build and publish container image
 
 on:
   push:
     branches:
-    - "**"
+      - "main"
+      - "develop"
     tags:
-    - "v*.*.*"
+      - "[0-9]+.[0-9]+.[0-9]+"
   pull_request:
     branches:
-    - "main"
-
+      - "main"
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: harbor-day2-operator
+  IMAGE_NAME: steadforce/steadops/workbenches/harbor-day2-operator
+
+permissions:
+  contents: read
+  packages: write
+  security-events: write
 
 jobs:
-  build-and-push-image:
+  lint:
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-
     steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
-    - uses: hadolint/hadolint-action@v3.1.0
-      with:
-        dockerfile: Dockerfile
-    - uses: ricardochaves/python-lint@v1.4.0
-      with:
-        use-pylint: false
-        use-flake8: false
-        use-black: false
-        use-mypy: false
-        use-isort: false
-    - name: Log in to the container registry
-      uses: docker/login-action@327cd5a69de6c009b9ce71bce8395f28e651bf99
-      with:
-        registry: ${{ env.REGISTRY }}
-        username: ${{ github.actor }}
-        password: ${{ secrets.GITHUB_TOKEN }}
-    - name: Extract metadata (tags, labels) for container
-      id: meta
-      uses: docker/metadata-action@8e1d5461f02b7886d3c1a774bfbd873650445aa2
-      with:
-        images: ${{ env.REGISTRY }}/steadforce/steadops/workbenches/${{ env.IMAGE_NAME }}
-        tags: |
-          type=ref,event=branch
-          type=ref,event=pr
-          type=semver,pattern={{version}}
-          type=semver,pattern={{major}}.{{minor}}
-          type=semver,pattern={{major}}
-          type=sha
-    - name: Build container image for tests
-      uses: docker/build-push-action@ca877d9245402d1537745e0e356eab47c3520991
-      with:
-        context: .
-        push: false
-        tags: ${{ env.IMAGE_NAME }}:test
-    - name: Test harbor tool
-      run: |
-        docker run --rm ${{ env.IMAGE_NAME }}:test /usr/local/harbor --help
-    - name: Tag and push tested container image
-      uses: docker/build-push-action@ca877d9245402d1537745e0e356eab47c3520991
-      with:
-        context: .
-        push: ${{ github.event_name != 'pull_request' }}
-        tags: ${{ steps.meta.outputs.tags }}
-        labels: ${{ steps.meta.outputs.labels }}
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Run Hadolint
+        uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: Dockerfile
+          failure-threshold: error
+
+      - name: Run Trivy filesystem scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          scan-ref: '.'
+          format: 'sarif'
+          output: 'trivy-fs-results.sarif'
+          severity: 'CRITICAL,HIGH'
+
+      - name: Upload Trivy scan results
+        uses: github/codeql-action/upload-sarif@v2
+        if: always()
+        with:
+          sarif_file: 'trivy-fs-results.sarif'
+          category: 'trivy-fs'
+
+  test:
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        with:
+          buildkitd-flags: --debug
+
+      - name: Build test image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          load: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          tags: ${{ env.IMAGE_NAME }}:test
+          target: test
+
+      - name: Run tests
+        run: |
+          docker run --rm ${{ env.IMAGE_NAME }}:test /home/builder/venv/bin/python -m unittest discover -v -s .
+
+  build-and-push:
+    runs-on: ubuntu-latest
+    needs: [lint, test]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to registry
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=semver,pattern={{version}},value=${{ github.ref_name }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ github.ref_name }}
+            type=ref,event=branch
+            type=ref,event=pr
+            type=sha,prefix=
+          labels: |
+            org.opencontainers.image.title=Harbor Day 2 Operator
+            org.opencontainers.image.description=Operator for managing Harbor registry configuration
+            org.opencontainers.image.vendor=Steadforce
+
+      - name: Build and push image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          build-args: |
+            VERSION=${{ fromJSON(steps.meta.outputs.json).labels['org.opencontainers.image.version'] }}
+            GIT_SHA=${{ github.sha }}
+
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.version }}
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+          severity: 'CRITICAL,HIGH'
+
+      - name: Upload Trivy scan results
+        uses: github/codeql-action/upload-sarif@v2
+        if: always()
+        with:
+          sarif_file: 'trivy-results.sarif'
+          category: 'trivy-image'
