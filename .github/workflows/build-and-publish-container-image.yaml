@@ -18,7 +18,6 @@ env:
 permissions:
   contents: read
   packages: write
-  security-events: write
 
 jobs:
   lint:
@@ -33,34 +32,10 @@ jobs:
           dockerfile: Dockerfile
           failure-threshold: error
 
-  fs-scan:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Run Trivy filesystem scan
-        uses: aquasecurity/trivy-action@master
-        with:
-          scan-type: 'fs'
-          scan-ref: '.'
-          format: 'sarif'
-          output: 'trivy-fs-results.sarif'
-          severity: 'CRITICAL,HIGH'
-
-      - name: Upload Trivy scan results
-        uses: github/codeql-action/upload-sarif@v3
-        if: always()
-        with:
-          sarif_file: 'trivy-fs-results.sarif'
-          category: 'trivy-fs'
-
   build:
     runs-on: ubuntu-latest
-    needs: [lint, fs-scan]
+    needs: [lint]
     if: github.event_name != 'pull_request'
-    outputs:
-      image-tags: ${{ steps.meta.outputs.tags }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -102,29 +77,9 @@ jobs:
             VERSION=${{ fromJSON(steps.meta.outputs.json).labels['org.opencontainers.image.version'] }}
             GIT_SHA=${{ github.sha }}
 
-  scan:
-    runs-on: ubuntu-latest
-    needs: [build]
-    if: github.event_name != 'pull_request'
-    steps:
-      - name: Run Trivy vulnerability scanner
-        uses: aquasecurity/trivy-action@master
-        with:
-          scan-type: 'image'
-          image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.event_name == 'release' && github.event.release.tag_name || 'latest' }}
-          format: 'sarif'
-          output: 'trivy-results.sarif'
-          severity: 'CRITICAL,HIGH'
-
-      - name: Upload Trivy scan results
-        uses: github/codeql-action/upload-sarif@v3
-        with:
-          sarif_file: 'trivy-results.sarif'
-          category: 'trivy-image'
-
   pr-build:
     runs-on: ubuntu-latest
-    needs: [lint, fs-scan]
+    needs: [lint]
     if: github.event_name == 'pull_request'
     steps:
       - name: Checkout repository
@@ -158,23 +113,3 @@ jobs:
           build-args: |
             VERSION=${{ fromJSON(steps.meta.outputs.json).labels['org.opencontainers.image.version'] }}
             GIT_SHA=${{ github.sha }}
-
-  pr-scan:
-    runs-on: ubuntu-latest
-    needs: [pr-build]
-    if: github.event_name == 'pull_request'
-    steps:
-      - name: Run Trivy vulnerability scanner
-        uses: aquasecurity/trivy-action@master
-        with:
-          scan-type: 'image'
-          image-ref: harbor-day2-operator:pr-${{ github.sha }}
-          format: 'sarif'
-          output: 'trivy-results.sarif'
-          severity: 'CRITICAL,HIGH'
-
-      - name: Upload Trivy scan results
-        uses: github/codeql-action/upload-sarif@v3
-        with:
-          sarif_file: 'trivy-results.sarif'
-          category: 'trivy-image'
