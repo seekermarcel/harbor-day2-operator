@@ -48,12 +48,13 @@ EOF
 # Build the binary with security flags
 RUN --mount=type=cache,target=/root/.cache/pyinstaller \
     <<EOF
+mkdir -p dist
 /home/builder/venv/bin/pyinstaller \
     --clean \
     --onefile \
     --strip \
     --name harbor \
-    --no-upx \
+    --noupx \
     src/harbor.py
 # Add version info
 echo "${VERSION:-dev}" > dist/version.txt
