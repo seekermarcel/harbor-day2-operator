@@ -87,6 +87,7 @@ jobs:
             org.opencontainers.image.vendor=Steadforce
 
       - name: Build and push image
+        id: build
         uses: docker/build-push-action@v5
         with:
           context: .
@@ -99,6 +100,22 @@ jobs:
           build-args: |
             VERSION=${{ fromJSON(steps.meta.outputs.json).labels['org.opencontainers.image.version'] }}
             GIT_SHA=${{ github.sha }}
+
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'image'
+          image-ref: ${{ steps.meta.outputs.tags }}
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+          severity: 'CRITICAL,HIGH'
+
+      - name: Upload Trivy scan results
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: 'trivy-results.sarif'
+          category: 'trivy-image'
 
       - name: Run Trivy vulnerability scanner
         uses: aquasecurity/trivy-action@master
