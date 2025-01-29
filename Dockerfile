@@ -1,42 +1,98 @@
-# Always use the latest image
+# syntax=docker/dockerfile:1.7
+# Build stage for compiling the application
 # hadolint ignore=DL3007
-FROM cgr.dev/chainguard/wolfi-base:latest AS base
-ENV PYTHONUNBUFFERED=1
+FROM cgr.dev/chainguard/wolfi-base:latest AS builder
 
-FROM base AS builder
-# we want always the latest version of fetched apk packages
+# Build arguments for version tracking
+ARG VERSION
+ARG GIT_SHA
+
+# Install build dependencies
 # hadolint ignore=DL3018
-RUN apk add --no-cache build-base openssl-dev glibc-dev posix-libc-utils libffi-dev \
-    python-3.12 python3-dev py3.12-pip && \
-    mkdir /install
-WORKDIR /install
-COPY requirements.txt requirements.txt
-# we want always the latest version of fetched pip packages
-# hadolint ignore=DL3013
-RUN pip3 install --no-cache-dir -U pip setuptools wheel && \
-    pip3 install --no-cache-dir --prefix=/install --no-warn-script-location -r ./requirements.txt
+RUN <<EOF
+apk add --no-cache \
+    build-base \
+    openssl-dev \
+    glibc-dev \
+    posix-libc-utils \
+    libffi-dev \
+    python-3.13 \
+    python3-dev \
+    py3.13-pip \
+    ccache \
+    patchelf
+EOF
 
-FROM builder AS native-builder
-# we want always the latest version of fetched apk packages
-# hadolint ignore=DL3018
-RUN apk add --no-cache ccache patchelf
-COPY src/ /src/
-RUN python -m venv /venv && \
-    /venv/bin/pip install --no-cache-dir -U pip nuitka setuptools wheel && \
-    /venv/bin/pip install --no-cache-dir --no-warn-script-location -r ./requirements.txt && \
-    /venv/bin/python -m nuitka --onefile /src/harbor.py && \
-    pwd && \
-    ls -lha
+# Create a non-root user for building
+RUN --mount=type=cache,target=/var/cache/apk \
+    adduser -D builder
+USER builder
+WORKDIR /home/builder
 
-FROM base AS test
-USER nonroot
-COPY --from=builder /install /usr/local
-COPY tests/ /tests/
-WORKDIR /tests
-RUN python3 -m unittest discover -v -s .
+# Copy only necessary files
+COPY --chown=builder:builder requirements.txt .
+COPY --chown=builder:builder src/ src/
 
-# Always use the latest image
+# Create venv and install dependencies
+RUN --mount=type=cache,target=/root/.cache/pip \
+    <<EOF
+python -m venv /home/builder/venv
+/home/builder/venv/bin/pip install --no-cache-dir -U pip setuptools wheel
+/home/builder/venv/bin/pip install --no-cache-dir pyinstaller
+/home/builder/venv/bin/pip install --no-cache-dir -r requirements.txt
+EOF
+
+# Build the binary with security flags
+RUN --mount=type=cache,target=/root/.cache/pyinstaller \
+    <<EOF
+mkdir -p dist
+/home/builder/venv/bin/pyinstaller \
+    --clean \
+    --onefile \
+    --strip \
+    --name harbor \
+    --noupx \
+    src/harbor.py
+# Add version info
+echo "${VERSION:-dev}" > dist/version.txt
+echo "${GIT_SHA:-unknown}" > dist/gitsha.txt
+EOF
+
+# Final minimal runtime stage
 # hadolint ignore=DL3007
 FROM cgr.dev/chainguard/wolfi-base:latest
-USER nonroot
-COPY --from=native-builder /install/harbor.bin /usr/local/harbor
+
+# Create a non-root user for running the application
+RUN <<EOF
+adduser -D harbor
+mkdir -p /var/lib/harbor /var/log/harbor
+chown -R harbor:harbor /var/lib/harbor /var/log/harbor
+EOF
+
+# Copy only the compiled binary and metadata
+COPY --from=builder --chown=harbor:harbor /home/builder/dist/harbor /usr/local/bin/harbor
+COPY --from=builder --chown=harbor:harbor /home/builder/dist/version.txt /var/lib/harbor/version.txt
+COPY --from=builder --chown=harbor:harbor /home/builder/dist/gitsha.txt /var/lib/harbor/gitsha.txt
+
+# Set proper permissions
+RUN <<EOF
+chmod 755 /usr/local/bin/harbor
+chmod 644 /var/lib/harbor/version.txt /var/lib/harbor/gitsha.txt
+chmod 755 /var/lib/harbor /var/log/harbor
+EOF
+
+# Use non-root user
+USER harbor
+WORKDIR /var/lib/harbor
+
+# Define environment variables
+ENV PYTHONUNBUFFERED=1 \
+    PATH="/usr/local/bin:$PATH" \
+    VERSION="${VERSION:-dev}"
+
+# Add healthcheck
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+    CMD ["/usr/local/bin/harbor", "--version"]
+
+# Set entrypoint
+ENTRYPOINT ["/usr/local/bin/harbor"]

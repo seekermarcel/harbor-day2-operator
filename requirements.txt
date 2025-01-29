@@ -1,3 +1,4 @@
 harborapi==0.26.2
 python-json-logger==3.2.1
 chevron==0.14.0
+pyinstaller==6.11.1
